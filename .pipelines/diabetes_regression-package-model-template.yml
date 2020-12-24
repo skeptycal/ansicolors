@@ -1,0 +1,83 @@
+# Pipeline template that creates a model package and adds the package location to the environment for subsequent tasks to use.
+parameters:
+- name: modelId
+  type: string
+  default: ''
+- name: workingDirectory # The working directory to run the CLI script
+  type: string
+  default: ''
+- name: inferenceConfigPath # Relative to working directory
+  type: string
+  default: ''
+- name: entryScriptPath # Optional - will overwrite inference config entry script
+  type: string
+  default: ''
+
+steps:
+  - task: AzureCLI@1
+    displayName: 'Install AzureML CLI'
+    inputs:
+      azureSubscription: '$(WORKSPACE_SVC_CONNECTION)'
+      scriptLocation: inlineScript
+      workingDirectory: ${{ parameters.workingDirectory }}
+      inlineScript: |
+        pip install --upgrade azureml-sdk
+        az extension add -n azure-cli-ml
+
+  # Default - build using inference config only
+  - ${{ if eq(length(parameters.entryScriptPath), 0) }}:
+    - task: AzureCLI@1
+      displayName: 'Create model package'
+      inputs:
+        azureSubscription: '$(WORKSPACE_SVC_CONNECTION)'
+        scriptLocation: inlineScript
+        workingDirectory: ${{ parameters.workingDirectory }}
+        inlineScript: |
+          set -e # fail on error
+
+          pip freeze
+
+          # Create model package using CLI
+          az ml model package --workspace-name $(WORKSPACE_NAME) -g $(RESOURCE_GROUP) \
+          --model '${{ parameters.modelId }}' \
+          --ic '${{ parameters.inferenceConfigPath }}' \
+          -v \
+          --query 'location' -o tsv > image_logs.txt
+          
+          # Show logs
+          cat image_logs.txt
+
+  # Option to overwrite entry script
+  - ${{ if gt(length(parameters.entryScriptPath), 0) }}:
+    - task: AzureCLI@1
+      displayName: 'Create model package w/ custom entry script'
+      inputs:
+        azureSubscription: '$(WORKSPACE_SVC_CONNECTION)'
+        scriptLocation: inlineScript
+        workingDirectory: ${{ parameters.workingDirectory }}
+        inlineScript: |
+          set -e # fail on error
+
+          # Create model package using CLI
+          az ml model package --workspace-name $(WORKSPACE_NAME) -g $(RESOURCE_GROUP) \
+          --model '${{ parameters.modelId }}' \
+          --ic '${{ parameters.inferenceConfigPath }}' \
+          --entry-script '${{ parameters.entryScriptPath }}' \
+          -v \
+          --query 'location' -o tsv > image_logs.txt
+          
+          # Show logs
+          cat image_logs.txt
+
+  - task: AzureCLI@1
+    displayName: 'Set IMAGE_LOCATION variable'
+    inputs:
+      azureSubscription: '$(WORKSPACE_SVC_CONNECTION)'
+      scriptLocation: inlineScript
+      workingDirectory: ${{ parameters.workingDirectory }}
+      inlineScript: |
+        set -e # fail on error
+
+        # Set environment variable using the last line of logs that has the package location
+        IMAGE_LOCATION=$(tail -n 1 image_logs.txt)
+        echo "##vso[task.setvariable variable=IMAGE_LOCATION]$IMAGE_LOCATION"
